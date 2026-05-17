@@ -49,15 +49,16 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* s) override {
     connected = true;
-    Serial.println("[ble] connected");
+    Serial.printf("[ble] connected (total %u)\n", s->getConnectedCount());
+    // Keep advertising so a second client (e.g. usage daemon) can also connect.
+    BLEDevice::startAdvertising();
   }
   void onDisconnect(BLEServer* s) override {
-    connected = false;
-    secure = false;
-    passkey = 0;
-    mtu = 23;
-    Serial.println("[ble] disconnected");
-    // Restart advertising so the next client can find us.
+    // Only mark disconnected when the last client leaves.
+    uint32_t remaining = s->getConnectedCount();
+    connected = remaining > 0;
+    if (!connected) { secure = false; passkey = 0; mtu = 23; }
+    Serial.printf("[ble] disconnected (remaining %u)\n", remaining);
     BLEDevice::startAdvertising();
   }
   void onMtuChanged(BLEServer*, esp_ble_gatts_cb_param_t* param) override {

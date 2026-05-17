@@ -20,6 +20,21 @@ struct TamaState {
   char     promptId[40];     // pending permission request ID; empty = no prompt
   char     promptTool[20];
   char     promptHint[44];
+  // Rate-limit data sent by the Mac companion daemon via BLE
+  float    rate5h;           // 0.0–1.0, -1 = no data yet
+  float    rate7d;
+  int32_t  rate5hResetMins;  // minutes until 5-hour window resets, -1 = unknown
+  int32_t  rate7dResetMins;
+  uint32_t rateUpdatedMs;    // millis() when rate data was last received
+
+  TamaState() : sessionsTotal(0), sessionsRunning(0), sessionsWaiting(0),
+    recentlyCompleted(false), tokensToday(0), lastUpdated(0),
+    connected(false), nLines(0), lineGen(0),
+    rate5h(-1.0f), rate7d(-1.0f),
+    rate5hResetMins(-1), rate7dResetMins(-1), rateUpdatedMs(0) {
+    msg[0] = 0; lines[0][0] = 0; promptId[0] = 0;
+    promptTool[0] = 0; promptHint[0] = 0;
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -100,6 +115,8 @@ static void _applyJson(const char* line, TamaState* out) {
     ht.D  = lt.tm_mday;
     ht.dow = lt.tm_wday;
     hwRtcWrite(ht);
+    // Also sync ESP32 system clock so time(nullptr) works for rate-limit countdowns.
+    { struct timeval tv = { .tv_sec = (time_t)t[0].as<uint32_t>(), .tv_usec = 0 }; settimeofday(&tv, nullptr); }
     extern uint32_t _clkLastRead;
     _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
     _rtcValid = true;
@@ -148,6 +165,20 @@ static void _applyJson(const char* line, TamaState* out) {
   } else {
     out->promptId[0] = 0; out->promptTool[0] = 0; out->promptHint[0] = 0;
   }
+  // Rate-limit data from the Mac companion daemon.
+  // Keys: rate_5h (0.0-1.0), rate_7d (0.0-1.0),
+  //       rate_5h_reset_mins (int), rate_7d_reset_mins (int).
+  if (doc["rate_5h"].is<float>())
+    out->rate5h = doc["rate_5h"].as<float>();
+  if (doc["rate_7d"].is<float>())
+    out->rate7d = doc["rate_7d"].as<float>();
+  if (doc["rate_5h_reset_mins"].is<int32_t>())
+    out->rate5hResetMins = doc["rate_5h_reset_mins"].as<int32_t>();
+  if (doc["rate_7d_reset_mins"].is<int32_t>())
+    out->rate7dResetMins = doc["rate_7d_reset_mins"].as<int32_t>();
+  if (doc["rate_5h"].is<float>() || doc["rate_7d"].is<float>())
+    out->rateUpdatedMs = millis();
+
   out->lastUpdated = millis();
   _lastLiveMs = millis();
 }

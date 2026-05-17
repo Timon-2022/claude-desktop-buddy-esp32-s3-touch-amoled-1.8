@@ -195,35 +195,14 @@ void applyDisplayMode() {
   characterInvalidate();  // redraws character on next tick (text mode path)
 }
 
-// Swipe cycles through all 9 pages as a flat list:
-//   Normal → Pet 1/2 → Pet 2/2 → Info 1/6 → … → Info 6/6 → (wrap to Normal)
-// Key1 short-press keeps the coarser 3-mode cycle; these helpers are only
-// wired into the release-based gesture classifier below.
-// applyDisplayMode() fires on mode transitions and Pet sub-page (matches
-// existing BtnB behaviour). Info sub-page skips it because drawInfo() clears
-// its own region — also matches existing BtnB behaviour.
+// Swipe cycles between the two pages: Normal (buddy + HUD) ↔ Usage (rate limits).
 static void swipeNextPage() {
-  if (displayMode == DISP_NORMAL) {
-    displayMode = DISP_PET; petPage = 0;                  applyDisplayMode();
-  } else if (displayMode == DISP_PET) {
-    if (petPage + 1 < PET_PAGES)    { petPage++;          applyDisplayMode(); }
-    else { displayMode = DISP_INFO; infoPage = 0;         applyDisplayMode(); }
-  } else { /* DISP_INFO */
-    if (infoPage + 1 < INFO_PAGES)  { infoPage++; }
-    else { displayMode = DISP_NORMAL;                     applyDisplayMode(); }
-  }
+  displayMode = (displayMode == DISP_NORMAL) ? DISP_INFO : DISP_NORMAL;
+  applyDisplayMode();
 }
-
 static void swipePrevPage() {
-  if (displayMode == DISP_NORMAL) {
-    displayMode = DISP_INFO; infoPage = INFO_PAGES - 1;   applyDisplayMode();
-  } else if (displayMode == DISP_PET) {
-    if (petPage > 0)                { petPage--;          applyDisplayMode(); }
-    else { displayMode = DISP_NORMAL;                     applyDisplayMode(); }
-  } else { /* DISP_INFO */
-    if (infoPage > 0)               { infoPage--; }
-    else { displayMode = DISP_PET; petPage = PET_PAGES - 1; applyDisplayMode(); }
-  }
+  displayMode = (displayMode == DISP_NORMAL) ? DISP_INFO : DISP_NORMAL;
+  applyDisplayMode();
 }
 
 const char* menuItems[] = { "settings", "turn off", "help", "about", "demo", "close" };
@@ -402,7 +381,6 @@ void menuConfirm() {
     case 3:
       menuOpen = false;
       displayMode = DISP_INFO;
-      infoPage = (menuSel == 2) ? INFO_PG_BUTTONS : INFO_PG_CREDITS;
       applyDisplayMode();
       characterInvalidate();
       break;
@@ -891,32 +869,193 @@ void drawPet() {
   spr.printf("%u/%u", petPage + 1, PET_PAGES);
 }
 
+// ── Usage page helpers ────────────────────────────────────────────────────────
+static void _fmtMins(char* out, size_t sz, int32_t mins) {
+  if (mins < 0) { snprintf(out, sz, "--"); return; }
+  int d = mins / 1440, h = (mins % 1440) / 60, m = mins % 60;
+  if (d > 0)      snprintf(out, sz, "%dd %dh", d, h);
+  else if (h > 0) snprintf(out, sz, "%dh %dm", h, m);
+  else            snprintf(out, sz, "%dm", m);
+}
+
+static void _drawUsageBar(int x, int y, int w, int h, float frac, uint16_t fg) {
+  spr.fillRoundRect(x, y, w, h, h / 2, 0x2104);
+  int filled = (int)(w * constrain(frac, 0.0f, 1.0f));
+  if (filled > h) spr.fillRoundRect(x, y, filled, h, h / 2, fg);
+}
+
+static const uint16_t USAGE_ORANGE = 0xFB40;
+static const uint16_t USAGE_GREEN  = 0x3DC0;
+static const uint16_t USAGE_RED    = 0xF800;
+static const uint16_t USAGE_TRACK  = 0x18C3;
+static const uint16_t USAGE_DIM    = 0x4208;
+static const uint16_t USAGE_PILL   = 0x4010;  // dark purple pill bg
+
+static uint16_t _usageColor(float u) {
+  if (u < 0) return USAGE_TRACK;
+  if (u >= 0.8f) return USAGE_RED;
+  if (u >= 0.5f) return USAGE_ORANGE;
+  return USAGE_GREEN;
+}
+
+static const char* _usageStateLabel() {
+  if (!tama.connected) return "offline";
+  switch (activeState) {
+    case P_BUSY:      return "working...";
+    case P_ATTENTION: return "waiting...";
+    case P_CELEBRATE: return "celebrating!";
+    case P_DIZZY:     return "confused...";
+    case P_HEART:     return "happy!";
+    case P_SLEEP:     return "sleeping...";
+    default:          return "thinking...";
+  }
+}
+
+// 20×14 robot face icon in orange
+static void _drawUsageMiniIcon(int x, int y) {
+  uint16_t c = USAGE_ORANGE;
+  spr.fillRoundRect(x,    y,    20, 14, 3, c);       // head
+  spr.fillRect(x+3,  y+3,  4, 5, 0x0000);            // left eye socket
+  spr.fillRect(x+13, y+3,  4, 5, 0x0000);            // right eye socket
+  spr.fillRect(x+4,  y+4,  2,  3, 0xFFFF);           // left iris
+  spr.fillRect(x+14, y+4,  2,  3, 0xFFFF);           // right iris
+  spr.fillRect(x+5,  y+10, 10, 2, 0x0000);           // mouth
+}
+
+// Battery bar: 20×9 px
+static void _drawUsageBattery(int x, int y, int pct, bool charging) {
+  spr.drawRoundRect(x, y, 20, 9, 2, USAGE_DIM);
+  spr.fillRect(x+20, y+3, 2, 3, USAGE_DIM);          // nub
+  int fill = max(2, 18 * pct / 100);
+  uint16_t col = charging ? 0x07FF :
+                 pct > 50  ? USAGE_GREEN :
+                 pct > 20  ? USAGE_ORANGE : USAGE_RED;
+  spr.fillRoundRect(x+1, y+1, fill, 7, 1, col);
+}
+
+// Pill label right-aligned to rx
+static void _drawUsagePill(int rx, int y, const char* txt) {
+  int tw = strlen(txt) * 6;
+  int pw = tw + 12, ph = 16;
+  int px = rx - pw;
+  spr.fillRoundRect(px, y, pw, ph, 8, USAGE_PILL);
+  spr.setTextSize(1);
+  spr.setTextColor(0xC618, USAGE_PILL);
+  spr.setCursor(px + 6, y + 5);
+  spr.print(txt);
+}
+
+void drawUsagePage() {
+  spr.fillScreen(0x0000);
+  spr.setFont((const GFXfont*)NULL);
+  bool hasData = (tama.rate5h >= 0.0f || tama.rate7d >= 0.0f);
+
+  // ── Header: icon | "Usage" | battery  (y=8..28) ──────────
+  _drawUsageMiniIcon(SAFE_L, SAFE_T);
+  spr.setTextSize(2);
+  spr.setTextColor(0xFFFF, 0x0000);
+  spr.setCursor(CX - 30, SAFE_T + 3);
+  spr.print("Usage");
+  HwBattery hb = hwBattery();
+  _drawUsageBattery(SAFE_R - 23, SAFE_T + 3, hb.pct, hb.charging);
+
+  // ── Section 1: 5-hour  (y=32..82) ─────────────────────────
+  const int s1Y = 32;
+  int pct5 = (tama.rate5h >= 0) ? (int)(tama.rate5h * 100 + 0.5f) : -1;
+  uint16_t col5 = _usageColor(tama.rate5h);
+
+  spr.setTextSize(3);
+  spr.setTextColor(0xFFFF, 0x0000);
+  spr.setCursor(SAFE_L, s1Y);
+  if (pct5 >= 0) spr.printf("%d%%", pct5);
+  else           { spr.setTextColor(USAGE_DIM, 0x0000); spr.print("--%"); }
+  _drawUsagePill(SAFE_R, s1Y + 2, "Current");
+
+  _drawUsageBar(SAFE_L, s1Y + 28, SAFE_R - SAFE_L, 8,
+                tama.rate5h >= 0 ? tama.rate5h : 0.0f, col5);
+
+  spr.setTextSize(1);
+  spr.setTextColor(USAGE_DIM, 0x0000);
+  spr.setCursor(SAFE_L, s1Y + 40);
+  if (!hasData)                       spr.print("waiting for bridge...");
+  else if (tama.rate5hResetMins >= 0) {
+    char t[16]; _fmtMins(t, sizeof(t), tama.rate5hResetMins);
+    spr.printf("Resets in %s", t);
+  }
+
+  // ── Divider  (y=88) ────────────────────────────────────────
+  spr.drawFastHLine(SAFE_L, 88, SAFE_R - SAFE_L, 0x2104);
+
+  // ── Section 2: 7-day  (y=94..144) ─────────────────────────
+  const int s2Y = 94;
+  int pct7 = (tama.rate7d >= 0) ? (int)(tama.rate7d * 100 + 0.5f) : -1;
+  uint16_t col7 = _usageColor(tama.rate7d);
+
+  spr.setTextSize(3);
+  spr.setTextColor(0xFFFF, 0x0000);
+  spr.setCursor(SAFE_L, s2Y);
+  if (pct7 >= 0) spr.printf("%d%%", pct7);
+  else           { spr.setTextColor(USAGE_DIM, 0x0000); spr.print("--%"); }
+  _drawUsagePill(SAFE_R, s2Y + 2, "Weekly");
+
+  _drawUsageBar(SAFE_L, s2Y + 28, SAFE_R - SAFE_L, 8,
+                tama.rate7d >= 0 ? tama.rate7d : 0.0f, col7);
+
+  spr.setTextSize(1);
+  spr.setTextColor(USAGE_DIM, 0x0000);
+  spr.setCursor(SAFE_L, s2Y + 40);
+  if (!hasData)                       spr.print("waiting for bridge...");
+  else if (tama.rate7dResetMins >= 0) {
+    char t[16]; _fmtMins(t, sizeof(t), tama.rate7dResetMins);
+    spr.printf("Resets in %s", t);
+  }
+
+  // ── Status zone  (y=156..216, 60px) ───────────────────────
+  // Thin separator, then state label centered at size 2 (16px tall).
+  spr.drawFastHLine(SAFE_L, 156, SAFE_R - SAFE_L, 0x2104);
+  char stBuf[24];
+  snprintf(stBuf, sizeof(stBuf), "* %s", _usageStateLabel());
+  uint16_t stCol = tama.connected ? USAGE_ORANGE : USAGE_DIM;
+  drawCenteredText(stBuf, CX, 186, 2, stCol, 0x0000);
+}
+
 void drawHUD() {
   if (tama.promptId[0]) { drawApproval(); return; }
   const Palette& p = characterPalette();
-  // chill7 font: glyphs ~7 px tall but baseline-positioned (setCursor
-  // is the baseline, not the top). Allow ~10 px line spacing, ~22 byte
-  // budget per line — Chinese chars are ~7 px wide, ASCII ~5 px, so a
-  // mixed line of 22 bytes (~7 Chinese OR 22 ASCII) fits W=184.
-  const int SHOW = 3, LH = 10, WIDTH = 22;
-  const int AREA = SHOW * LH + 4;
-  spr.fillRect(0, H - AREA, W, AREA, p.bg);
 
-  // Menu/settings/reset should hide the HUD strip underneath — panels are
-  // centered and don't cover the bottom 34 px on their own.
+  // 5 lines at 11px each + 8px top padding + separator = 63px total.
+  // Width budget 26 bytes ≈ 26 ASCII chars (156px) or ~8 CJK chars — covers
+  // the full safe area of 168px. Previously 3 lines / 22 chars / 34px total.
+  const int SHOW = 5, LH = 11, WIDTH = 26;
+  const int AREA = SHOW * LH + 8;   // 63px
+  const int TOP  = H - AREA;        // 161 — clears everything below the pet
+
+  spr.fillRect(0, TOP, W, AREA, p.bg);
+  spr.drawFastHLine(SAFE_L, TOP + 1, SAFE_R - SAFE_L, p.textDim);
+
   if (menuOpen || settingsOpen || resetOpen) return;
 
   if (tama.lineGen != lastLineGen) { msgScroll = 0; lastLineGen = tama.lineGen; wake(); }
 
-  // buddy/character ticks leave textsize at 2 (home scale); without
-  // pinning it here the CJK font alternates between 1× and 2× every tick.
   spr.setTextSize(1);
   spr.setFont((const uint8_t*)u8g2_font_chill7_h_cjk);
 
   if (tama.nLines == 0) {
-    spr.setTextColor(p.text, p.bg);
-    spr.setCursor(SAFE_L, SAFE_B - 4);
-    spr.print(tama.msg);
+    if (tama.connected && tama.tokensToday > 0) {
+      spr.setTextColor(p.text, p.bg);
+      spr.setCursor(SAFE_L, TOP + 12);
+      spr.print(tama.msg);
+      spr.setTextColor(p.textDim, p.bg);
+      spr.setCursor(SAFE_L, TOP + 24);
+      uint32_t t = tama.tokensToday;
+      if (t >= 1000000)   spr.printf("today %lu.%luM tok", t/1000000, (t/100000)%10);
+      else if (t >= 1000) spr.printf("today %lu.%luK tok", t/1000, (t/100)%10);
+      else                spr.printf("today %lu tok", t);
+    } else {
+      spr.setTextColor(p.text, p.bg);
+      spr.setCursor(SAFE_L, TOP + 14);
+      spr.print(tama.msg);
+    }
     spr.setFont((const GFXfont*)NULL);
     return;
   }
@@ -940,7 +1079,7 @@ void drawHUD() {
     uint8_t row = start + i;
     bool fresh = (srcOf[row] == newest) && (msgScroll == 0);
     spr.setTextColor(fresh ? p.text : p.textDim, p.bg);
-    spr.setCursor(SAFE_L, H - AREA + 8 + i * LH);   // +8 = baseline offset for 7-px font
+    spr.setCursor(SAFE_L, TOP + 10 + i * LH);
     spr.print(disp[row]);
   }
 
@@ -949,7 +1088,7 @@ void drawHUD() {
   if (msgScroll > 0) {
     spr.setTextSize(1);
     spr.setTextColor(p.body, p.bg);
-    spr.setCursor(SAFE_R - 18, SAFE_B - 10);
+    spr.setCursor(SAFE_R - 18, SAFE_B - 8);
     spr.printf("-%u", msgScroll);
   }
 }
@@ -1102,7 +1241,7 @@ void loop() {
         menuSel = (menuSel + 1) % MENU_N;
       } else {
         beep(1800, 30);
-        displayMode = (displayMode + 1) % DISP_COUNT;
+        displayMode = (displayMode == DISP_NORMAL) ? DISP_INFO : DISP_NORMAL;
         applyDisplayMode();
       }
     }
@@ -1130,13 +1269,6 @@ void loop() {
     } else if (menuOpen) {
       beep(2400, 30);
       menuConfirm();
-    } else if (displayMode == DISP_INFO) {
-      beep(2400, 30);
-      infoPage = (infoPage + 1) % INFO_PAGES;
-    } else if (displayMode == DISP_PET) {
-      beep(2400, 30);
-      petPage = (petPage + 1) % PET_PAGES;
-      applyDisplayMode();
     } else {
       beep(2400, 30);
       msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
@@ -1227,16 +1359,7 @@ void loop() {
     }
     else if (abs(dx) < 12 && abs(dy) < 12 && dt < 800) {
       // Stationary tap → route by press-start position.
-      if (displayMode == DISP_INFO && tappedFrom(W - 60, 0, 60, 70)) {
-        beep(2400, 30);
-        infoPage = (infoPage + 1) % INFO_PAGES;
-      }
-      else if (displayMode == DISP_PET && tappedFrom(W - 60, 0, 60, 70)) {
-        beep(2400, 30);
-        petPage = (petPage + 1) % PET_PAGES;
-        applyDisplayMode();
-      }
-      else if (displayMode == DISP_NORMAL && !tpClocking && tappedFrom(12, 20, W - 24, 110)) {
+      if (displayMode == DISP_NORMAL && !tpClocking && tappedFrom(12, 20, W - 24, 110)) {
         // Tap buddy body → heart reaction (HUD; clock mode uses the block below).
         triggerOneShot(P_HEART, 2000);
         _playfulUntil = millis() + PLAYFUL_MS;
@@ -1358,8 +1481,7 @@ void loop() {
   if (!napping && !screenOff) {
     if (blePasskey()) drawPasskey();
     else if (clocking) drawClock();
-    else if (displayMode == DISP_INFO) drawInfo();
-    else if (displayMode == DISP_PET) drawPet();
+    else if (displayMode == DISP_INFO) drawUsagePage();
     else if (settings().hud) drawHUD();
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();

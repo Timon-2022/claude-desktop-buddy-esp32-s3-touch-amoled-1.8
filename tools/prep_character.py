@@ -11,7 +11,7 @@ import json, sys, shutil, tempfile, zipfile
 from pathlib import Path
 from PIL import Image, ImageSequence
 
-TARGET_W = 96
+TARGET_W = 168
 REF_W    = 1000   # normalize to this before computing the cross-state bbox
 PROJECT  = Path(__file__).resolve().parent.parent
 OUT_ROOT = PROJECT / "characters"
