@@ -1,19 +1,31 @@
-# claude-desktop-buddy — ESP32 AMOLED port
+# Claude Desktop Buddy for Waveshare AMOLED
 
-<img src="image.jpg" width="400" />
+A small desk companion that shows Claude activity, permission requests, and animated characters on an ESP32 AMOLED display.
 
-Claude for macOS and Windows can connect Claude Cowork and Claude Code to
-maker devices over BLE, so developers and makers can build hardware that
-displays permission prompts, recent messages, and other interactions.
+<img src="image.jpg" alt="Claude Desktop Buddy on a Waveshare AMOLED display" width="400" />
 
-This is a port of [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy)
-(originally targeting M5StickC Plus) to four Waveshare ESP32 AMOLED
-boards. The BLE wire protocol is unchanged — same pairing, same desktop
-apps, just a larger screen.
+This is a community port of [Anthropic's claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy), originally built for M5StickC Plus. It adapts the project to Waveshare ESP32 AMOLED boards while keeping the upstream BLE protocol.
 
-> **Building your own device?** You don't need any of the code here. See
-> **[REFERENCE.md](REFERENCE.md)** for the wire protocol: Nordic UART
-> Service UUIDs, JSON schemas, and the folder push transport.
+## What this port adds
+
+- Board profiles for four Waveshare ESP32-S3 / ESP32-C6 AMOLED devices, with shared UI code.
+- Display scaling, touch controls, and board-specific power and input handling.
+- CJK transcript rendering and an AMOLED attention indicator.
+
+The companion retains upstream features such as activity screens, on-device approve/deny controls, and animated ASCII or custom GIF characters. The board and UI adaptation is the focus of this repository; the core buddy concept and desktop integration come from the upstream project.
+
+## Before you build
+
+You need a supported board, PlatformIO, and a Claude desktop build that exposes the Hardware Buddy developer interface. This depends on an experimental developer feature and is not an officially supported Claude product integration. See [Availability](#availability).
+
+```bash
+git clone https://github.com/Timon-2022/claude-desktop-buddy-esp32-s3-touch-amoled-1.8.git
+cd claude-desktop-buddy-esp32-s3-touch-amoled-1.8
+```
+
+Then follow [Flashing](#flashing) for your exact board and [Pairing](#pairing) to connect it. There is no prebuilt firmware release published in this repository; the instructions below build from source.
+
+[Supported boards](#supported-boards) · [Controls](#controls) · [Custom GIF characters](#custom-gif-characters) · [BLE protocol reference](REFERENCE.md)
 
 ## Supported boards
 
